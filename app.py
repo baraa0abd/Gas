@@ -14,7 +14,7 @@ from plotter import plot_pressure_depth_diagram
 # Configuration & default case template
 # ---------------------------------------------------------------------------
 DEFAULT_CASE = {
-    "method": "Analytical",
+    "method": "Graphical",
     "well_depth": 5000.0,
     "p_wh": 200.0,
     "p_ko": 900.0,
@@ -50,26 +50,6 @@ def ensure_case_defaults(cases: dict) -> None:
 # ---------------------------------------------------------------------------
 if "gas_lift_cases" not in st.session_state:
     st.session_state.gas_lift_cases = {
-        "Base Case (Analytical)": {
-            **DEFAULT_CASE,
-            "method": "Analytical",
-            "well_depth": 5000.0,
-            "p_wh": 200.0,
-            "p_ko": 900.0,
-            "p_so": 850.0,
-            "g_s": 0.5,
-            "g_u": 0.15,
-            "sfl": 0.0,
-            "valve_depths": [1800.0, 3111.0, 4013.1],
-            "oil_api_gravity": 35.0,
-            "gas_gravity": 0.6,
-            "water_cut_percent": 50.0,
-            "solution_gor": 500.0,
-            "separator_pressure_psi": 100.0,
-            "surface_temp_f": 90.0,
-            "bht_f": 180.0,
-            "thermal_gradient_f_per_1000ft": 18.0,
-        },
         "Base Case (Graphical)": {
             **DEFAULT_CASE,
             "method": "Graphical",
@@ -93,6 +73,12 @@ if "gas_lift_cases" not in st.session_state:
     }
 
 ensure_case_defaults(st.session_state.gas_lift_cases)
+
+# Remove legacy analytical baseline if still in session from a prior version
+if "Base Case (Analytical)" in st.session_state.gas_lift_cases:
+    del st.session_state.gas_lift_cases["Base Case (Analytical)"]
+if st.session_state.get("active_case_select") == "Base Case (Analytical)":
+    st.session_state.active_case_select = "Base Case (Graphical)"
 
 
 # ---------------------------------------------------------------------------
