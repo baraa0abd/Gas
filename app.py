@@ -432,14 +432,35 @@ def build_graphical_pressure_lines(
     depths = _depth_samples(well_depth, step)
     d_arr = depths
 
-    g_static = _static_fluid_gradient(case, well_depth)
-    g_wfl = g_u
+    surface_temp = case.get("surface_temp_f", 90.0)
+    bht = case.get("bht_f", 200.0)
+    temp_profile = surface_temp + (bht - surface_temp) * (d_arr / max(well_depth, 1.0))
+
+    sfl_line = []
+    wfl_line = []
+    for d, temp_f in zip(d_arr, temp_profile):
+        est_p = p_wh + g_u * float(d)
+        rho_mix = calculate_mixture_density(
+            case.get("oil_api_gravity", 35.0),
+            case.get("water_cut_percent", 50.0),
+            case.get("solution_gor", 500.0),
+            est_p,
+            float(temp_f),
+            case.get("gas_gravity", 0.65),
+            case.get("separator_pressure_psi", 100.0),
+        )
+        g_static = get_temperature_corrected_gradient(
+            calculate_effective_gradient(rho_mix),
+            surface_temp,
+            float(temp_f),
+        )
+        g_working = get_temperature_corrected_gradient(g_u, surface_temp, float(temp_f))
+        sfl_line.append(p_wh + g_static * float(d))
+        wfl_line.append(p_wh + g_working * float(d))
 
     pko = (p_ko + g_s * d_arr).tolist()
     pso = (p_so + g_s * d_arr).tolist()
     tubing = (p_wh + g_u * d_arr).tolist()
-    sfl_line = (p_wh + g_static * d_arr).tolist()
-    wfl_line = (p_wh + g_wfl * d_arr).tolist()
 
     first_depth = valves[0] if valves else (sfl if sfl > 0 else well_depth * 0.25)
     first_depth = max(first_depth, 1.0)
@@ -627,6 +648,60 @@ def case_to_cache_tuple(case: dict) -> tuple:
     )
 
 
+# Widget key ↔ case field mapping (per active case)
+CASE_WIDGET_FIELDS: dict[str, str] = {
+    "method": "method",
+    "well_depth": "well_depth",
+    "p_wh": "p_wh",
+    "p_ko": "p_ko",
+    "p_so": "p_so",
+    "g_s": "g_s",
+    "g_u": "g_u",
+    "sfl": "sfl",
+    "oil_api_gravity": "oil_api",
+    "gas_gravity": "gas_grav",
+    "water_cut_percent": "water_cut",
+    "solution_gor": "solution_gor",
+    "separator_pressure_psi": "sep_p",
+    "surface_temp_f": "surf_temp",
+    "bht_f": "bht",
+    "thermal_gradient_f_per_1000ft": "thermal_grad",
+}
+
+
+def widget_key(active_case: str, field: str) -> str:
+    suffix = CASE_WIDGET_FIELDS[field]
+    return f"{suffix}_{active_case}"
+
+
+def init_case_widgets(active_case: str, case: dict) -> None:
+    """Seed Streamlit widget session keys from the case dict (once per case)."""
+    for field in CASE_WIDGET_FIELDS:
+        key = widget_key(active_case, field)
+        if key not in st.session_state:
+            st.session_state[key] = case.get(field, DEFAULT_CASE.get(field))
+
+
+def sync_case_from_widgets(active_case: str) -> None:
+    """Write latest widget values back into the case dict before calculations."""
+    case = st.session_state.gas_lift_cases[active_case]
+    for field in CASE_WIDGET_FIELDS:
+        key = widget_key(active_case, field)
+        if key in st.session_state:
+            case[field] = st.session_state[key]
+
+
+def chart_fingerprint(case: dict) -> str:
+    """Unique key so Plotly re-renders whenever inputs or valve depths change."""
+    import hashlib
+
+    parts = []
+    for field in sorted(CASE_WIDGET_FIELDS):
+        parts.append(f"{field}={case.get(field)}")
+    parts.append(f"valves={case.get('valve_depths', [])}")
+    return hashlib.md5("|".join(parts).encode()).hexdigest()
+
+
 # ---------------------------------------------------------------------------
 # Continuous evaluation
 # ---------------------------------------------------------------------------
@@ -636,7 +711,7 @@ def evaluate_all_cases() -> None:
         case["valve_depths"] = run_engine(case)
 
 
-evaluate_all_cases()
+# NOTE: evaluation runs after sidebar widgets sync — not at import time.
 
 # ---------------------------------------------------------------------------
 # Sidebar & case management
@@ -682,160 +757,147 @@ with st.sidebar:
 
     if active_case and active_case in st.session_state.gas_lift_cases:
         active = st.session_state.gas_lift_cases[active_case]
+        init_case_widgets(active_case, active)
 
-        active["method"] = st.radio(
+        st.radio(
             "Design Method",
             ["Analytical", "Graphical"],
-            index=0 if active.get("method", "Analytical") == "Analytical" else 1,
-            key=f"method_{active_case}",
+            key=widget_key(active_case, "method"),
         )
 
         st.markdown("**Well & Pressure Parameters**")
-        active["well_depth"] = st.number_input(
+        st.number_input(
             "Well Depth (ft)",
             min_value=100.0,
             max_value=20000.0,
-            value=float(active.get("well_depth", 5000.0)),
             step=50.0,
-            key=f"well_depth_{active_case}",
+            key=widget_key(active_case, "well_depth"),
         )
-        active["p_wh"] = st.number_input(
+        st.number_input(
             "Wellhead Pressure P_wh (psi)",
             min_value=0.0,
             max_value=5000.0,
-            value=float(active.get("p_wh", 200.0)),
             step=10.0,
-            key=f"p_wh_{active_case}",
+            key=widget_key(active_case, "p_wh"),
         )
-        active["p_ko"] = st.number_input(
+        st.number_input(
             "Kickoff Pressure P_ko (psi)",
             min_value=0.0,
             max_value=5000.0,
-            value=float(active.get("p_ko", 900.0)),
             step=10.0,
-            key=f"p_ko_{active_case}",
+            key=widget_key(active_case, "p_ko"),
         )
-        active["p_so"] = st.number_input(
+        st.number_input(
             "Surface Operating P_so (psi)",
             min_value=0.0,
             max_value=5000.0,
-            value=float(active.get("p_so", 850.0)),
             step=10.0,
-            key=f"p_so_{active_case}",
+            key=widget_key(active_case, "p_so"),
         )
-        active["g_s"] = st.number_input(
+        st.number_input(
             "Gas Gradient g_s (psi/ft)",
             min_value=0.01,
             max_value=2.0,
-            value=float(active.get("g_s", 0.5)),
             step=0.01,
             format="%.3f",
-            key=f"g_s_{active_case}",
+            key=widget_key(active_case, "g_s"),
         )
-        active["g_u"] = st.number_input(
+        st.number_input(
             "Tubing Gradient g_u (psi/ft)",
             min_value=0.01,
             max_value=2.0,
-            value=float(active.get("g_u", 0.15)),
             step=0.01,
             format="%.3f",
-            key=f"g_u_{active_case}",
+            key=widget_key(active_case, "g_u"),
         )
-        active["sfl"] = st.number_input(
+        st.number_input(
             "Static Fluid Level SFL (ft)",
             min_value=0.0,
             max_value=20000.0,
-            value=float(active.get("sfl", 0.0)),
             step=50.0,
-            key=f"sfl_{active_case}",
+            key=widget_key(active_case, "sfl"),
             help="Used by the Graphical method for Valve 1 depth.",
         )
 
         st.divider()
         st.markdown("**Fluid Properties**")
-        active["oil_api_gravity"] = st.number_input(
+        st.number_input(
             "Oil API Gravity (°API)",
             min_value=5.0,
             max_value=70.0,
-            value=float(active.get("oil_api_gravity", 35.0)),
             step=0.5,
-            key=f"oil_api_{active_case}",
+            key=widget_key(active_case, "oil_api_gravity"),
             help="API gravity of produced crude oil",
         )
-        active["gas_gravity"] = st.number_input(
+        st.number_input(
             "Gas Gravity (relative to air)",
             min_value=0.5,
             max_value=2.0,
-            value=float(active.get("gas_gravity", 0.65)),
             step=0.05,
             format="%.2f",
-            key=f"gas_grav_{active_case}",
+            key=widget_key(active_case, "gas_gravity"),
             help="Specific gravity of lift gas",
         )
-        active["water_cut_percent"] = st.number_input(
+        st.number_input(
             "Water Cut (%)",
             min_value=0.0,
             max_value=100.0,
-            value=float(active.get("water_cut_percent", 50.0)),
             step=5.0,
-            key=f"water_cut_{active_case}",
+            key=widget_key(active_case, "water_cut_percent"),
             help="Percentage water in produced fluids",
         )
-        active["solution_gor"] = st.number_input(
+        st.number_input(
             "Solution GOR (scf/bbl)",
             min_value=0.0,
             max_value=3000.0,
-            value=float(active.get("solution_gor", 500.0)),
             step=50.0,
-            key=f"solution_gor_{active_case}",
+            key=widget_key(active_case, "solution_gor"),
             help="Solution gas-oil ratio at bubble point",
         )
-        active["separator_pressure_psi"] = st.number_input(
+        st.number_input(
             "Separator Pressure (psi)",
             min_value=0.0,
             max_value=2000.0,
-            value=float(active.get("separator_pressure_psi", 100.0)),
             step=10.0,
-            key=f"sep_p_{active_case}",
+            key=widget_key(active_case, "separator_pressure_psi"),
             help="Surface separator operating pressure",
         )
 
         st.divider()
         st.markdown("**Temperature Profile**")
-        active["surface_temp_f"] = st.number_input(
+        st.number_input(
             "Surface Temperature (°F)",
             min_value=40.0,
             max_value=120.0,
-            value=float(active.get("surface_temp_f", 90.0)),
             step=5.0,
-            key=f"surf_temp_{active_case}",
+            key=widget_key(active_case, "surface_temp_f"),
         )
-        active["bht_f"] = st.number_input(
+        st.number_input(
             "Bottom Hole Temperature (°F)",
             min_value=100.0,
             max_value=400.0,
-            value=float(active.get("bht_f", 200.0)),
             step=5.0,
-            key=f"bht_{active_case}",
+            key=widget_key(active_case, "bht_f"),
             help="Estimated temperature at well total depth",
         )
 
         computed_gradient = auto_thermal_gradient(
-            active.get("surface_temp_f", 90.0),
-            active.get("bht_f", 200.0),
-            active.get("well_depth", 5000.0),
+            st.session_state.get(widget_key(active_case, "surface_temp_f"), 90.0),
+            st.session_state.get(widget_key(active_case, "bht_f"), 200.0),
+            st.session_state.get(widget_key(active_case, "well_depth"), 5000.0),
         )
         st.caption(f"Auto-calculated gradient: **{computed_gradient:.2f} °F / 1000 ft**")
 
-        active["thermal_gradient_f_per_1000ft"] = st.number_input(
+        st.number_input(
             "Thermal Gradient (°F / 1000 ft)",
             min_value=1.0,
             max_value=50.0,
-            value=float(active.get("thermal_gradient_f_per_1000ft", computed_gradient)),
             step=0.5,
-            key=f"thermal_grad_{active_case}",
+            key=widget_key(active_case, "thermal_gradient_f_per_1000ft"),
             help="Temperature increase per 1000 ft depth (auto-calculated from BHT if unchanged)",
         )
+
+        sync_case_from_widgets(active_case)
 
 evaluate_all_cases()
 
@@ -965,29 +1027,52 @@ GRAPHICAL_LINE_STYLE = {
     "Valve Zigzag": dict(color="#27ae60", width=3.5, dash="solid"),
 }
 
-graphical_cases = {
-    name: case
-    for name, case in st.session_state.gas_lift_cases.items()
-    if case.get("method") == "Graphical"
-}
+compare_all_graphical = st.checkbox(
+    "Compare all graphical cases",
+    value=False,
+    help="When unchecked, the chart follows the active case and updates live as you change sidebar inputs.",
+)
 
-fig = go.Figure()
-
-if not graphical_cases:
-    st.info(
-        "Pressure profile diagram is available for **Graphical** method cases only. "
-        "Switch the active case to Graphical or create a new graphical scenario."
+if active.get("method") == "Graphical":
+    cases_to_plot = (
+        dict(st.session_state.gas_lift_cases.items())
+        if compare_all_graphical
+        else {active_case: active}
     )
+    cases_to_plot = {
+        name: case for name, case in cases_to_plot.items() if case.get("method") == "Graphical"
+    }
 else:
-    for case_name, case in graphical_cases.items():
+    cases_to_plot = {
+        name: case
+        for name, case in st.session_state.gas_lift_cases.items()
+        if case.get("method") == "Graphical"
+    } if compare_all_graphical else {}
+
+plot_fingerprint = chart_fingerprint(active) if active.get("method") == "Graphical" else "none"
+
+if not cases_to_plot:
+    if active.get("method") != "Graphical":
+        st.info(
+            "Select **Graphical** as the design method for the active case to see the "
+            "live pressure diagram. It updates automatically when you change sidebar values."
+        )
+    else:
+        st.info("No graphical cases available to plot.")
+else:
+    fig = go.Figure()
+    x_max = 500.0
+
+    for case_name, case in cases_to_plot.items():
         lines = build_graphical_pressure_lines(case)
-        prefix = case_name if len(graphical_cases) > 1 else ""
+        prefix = case_name if len(cases_to_plot) > 1 else ""
 
         for line_name, (pressures, depths) in lines.items():
             if not pressures or not depths:
                 continue
             style = GRAPHICAL_LINE_STYLE[line_name]
             label = f"{prefix} — {line_name}" if prefix else line_name
+            x_max = max(x_max, max(pressures))
             fig.add_trace(
                 go.Scatter(
                     x=pressures,
@@ -1002,7 +1087,6 @@ else:
                 )
             )
 
-        # Valve depth markers on zigzag horizontals
         valves = case.get("valve_depths", [])
         p_wh = case.get("p_wh", 100.0)
         p_ko = case.get("p_ko", 1000.0)
@@ -1012,12 +1096,13 @@ else:
             g_si = g_s - 0.022 * max(i, 0)
             p_t = p_wh + g_u * d_v
             p_c = p_ko + g_si * d_v
+            x_max = max(x_max, p_c, p_t)
             fig.add_trace(
                 go.Scatter(
                     x=[p_t, p_c],
                     y=[d_v, d_v],
                     mode="markers+text",
-                    name=f"{case_name} — Valve {i + 1}" if len(graphical_cases) > 1 else f"Valve {i + 1}",
+                    name=f"{case_name} — Valve {i + 1}" if len(cases_to_plot) > 1 else f"Valve {i + 1}",
                     marker=dict(symbol="diamond", size=9, color="#f1c40f", line=dict(width=1, color="#fff")),
                     text=[f"V{i + 1}", ""],
                     textposition="top center",
@@ -1031,13 +1116,12 @@ else:
                 )
             )
 
-        # SFL horizontal reference
         sfl = case.get("sfl", 0.0)
         if sfl > 0:
             fig.add_shape(
                 type="line",
                 x0=0,
-                x1=max(lines["PKO"][0]) * 1.05 if lines["PKO"][0] else 3000,
+                x1=x_max * 1.05,
                 y0=sfl,
                 y1=sfl,
                 line=dict(color="rgba(41, 128, 185, 0.45)", width=1.5, dash="dot"),
@@ -1054,15 +1138,8 @@ else:
                 font=dict(color="#2980b9", size=11),
             )
 
-    x_max = 500.0
-    for case in graphical_cases.values():
-        lines = build_graphical_pressure_lines(case)
-        for pressures, _ in lines.values():
-            if pressures:
-                x_max = max(x_max, max(pressures))
-
     fig.update_layout(
-        title="Continuous Gas Lift — Graphical Pressure vs. True Vertical Depth",
+        title=f"Continuous Gas Lift — Graphical Pressure vs. TVD ({active_case})",
         height=700,
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
         margin=dict(l=60, r=40, t=90, b=60),
@@ -1082,10 +1159,14 @@ else:
         gridcolor="rgba(255,255,255,0.08)",
     )
 
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(
+        fig,
+        use_container_width=True,
+        key=f"pressure_chart_{plot_fingerprint}",
+    )
 
 st.divider()
 st.caption(
-    "Graphical diagram shows six design lines (SFL, WFL, PSO, PKO, Kill Fluid, Tubing) "
-    "and the valve unloading zigzag. Analytical cases are excluded from this plot."
+    "The pressure diagram recalculates on every sidebar change (valve depths, gradients, "
+    "fluid properties, and temperatures). Use **Graphical** method on the active case for live updates."
 )
