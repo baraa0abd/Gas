@@ -331,6 +331,136 @@ def run_engine(case: dict) -> list[float]:
     return analytical_engine(case)
 
 
+def _depth_samples(well_depth: float, step: float = 25.0) -> np.ndarray:
+    depths = np.arange(0.0, well_depth + step * 0.01, step)
+    if depths.size == 0 or depths[-1] != well_depth:
+        depths = np.append(depths, well_depth)
+    return depths
+
+
+def _static_fluid_gradient(case: dict, well_depth: float) -> float:
+    """Static liquid gradient for the SFL reference line."""
+    mid_depth = well_depth / 2.0
+    temp_f = calculate_temperature_at_depth(
+        mid_depth,
+        case.get("surface_temp_f", 90.0),
+        case.get("bht_f", 200.0),
+        well_depth,
+    )
+    est_p = case.get("p_wh", 100.0) + case.get("g_u", 0.125) * mid_depth
+    rho_mix = calculate_mixture_density(
+        case.get("oil_api_gravity", 35.0),
+        case.get("water_cut_percent", 50.0),
+        case.get("solution_gor", 500.0),
+        est_p,
+        temp_f,
+        case.get("gas_gravity", 0.65),
+        case.get("separator_pressure_psi", 100.0),
+    )
+    return calculate_effective_gradient(rho_mix)
+
+
+def build_valve_zigzag(case: dict, step: float = 10.0) -> tuple[list[float], list[float]]:
+    """
+    Valve unloading zigzag: tubing descent → horizontal bridge → casing gas diagonal.
+    Matches the hand-drawn continuous gas lift diagram pattern.
+    """
+    well_depth = case.get("well_depth", 8000.0)
+    p_wh = case.get("p_wh", 100.0)
+    p_ko = case.get("p_ko", 1000.0)
+    g_s = case.get("g_s", 0.5)
+    g_u = case.get("g_u", 0.125)
+    valves = case.get("valve_depths", [])
+
+    if not valves:
+        return [], []
+
+    xs: list[float] = []
+    ys: list[float] = []
+
+    def add_line(d_start: float, d_end: float, pressure_fn) -> None:
+        if d_end < d_start:
+            return
+        depths = np.arange(d_start, d_end + step * 0.01, step)
+        if depths.size == 0 or depths[-1] < d_end:
+            depths = np.append(depths, d_end)
+        for d in depths:
+            xs.append(float(pressure_fn(d)))
+            ys.append(float(d))
+
+    # Tubing descent from surface to first valve
+    add_line(0.0, valves[0], lambda d: p_wh + g_u * d)
+
+    for i, d_v in enumerate(valves):
+        g_si = g_s - 0.022 * max(i, 0)
+        p_t = p_wh + g_u * d_v
+        p_c = p_ko + g_si * d_v
+
+        # Horizontal bridge: tubing → casing at valve depth
+        xs.extend([p_t, p_c])
+        ys.extend([d_v, d_v])
+
+        if i < len(valves) - 1:
+            d_next = valves[i + 1]
+            # Casing gas diagonal to next valve depth
+            add_line(d_v, d_next, lambda d, gs=g_si: p_ko + gs * d)
+        else:
+            end_depth = min(well_depth, 5550.0)
+            if end_depth > d_v:
+                add_line(d_v, end_depth, lambda d: p_wh + g_u * d)
+
+    return xs, ys
+
+
+def build_graphical_pressure_lines(
+    case: dict,
+    step: float = 25.0,
+) -> dict[str, tuple[list[float], list[float]]]:
+    """
+    Six reference lines for the graphical gas lift diagram:
+    SFL, WFL, PSO, PKO, Kill fluid, Tubing — plus valve zigzag path.
+    """
+    well_depth = case.get("well_depth", 8000.0)
+    p_wh = case.get("p_wh", 100.0)
+    p_ko = case.get("p_ko", 1000.0)
+    p_so = case.get("p_so", 950.0)
+    g_s = case.get("g_s", 0.5)
+    g_u = case.get("g_u", 0.125)
+    sfl = case.get("sfl", 0.0)
+    valves = case.get("valve_depths", [])
+
+    depths = _depth_samples(well_depth, step)
+    d_arr = depths
+
+    g_static = _static_fluid_gradient(case, well_depth)
+    g_wfl = g_u
+
+    pko = (p_ko + g_s * d_arr).tolist()
+    pso = (p_so + g_s * d_arr).tolist()
+    tubing = (p_wh + g_u * d_arr).tolist()
+    sfl_line = (p_wh + g_static * d_arr).tolist()
+    wfl_line = (p_wh + g_wfl * d_arr).tolist()
+
+    first_depth = valves[0] if valves else (sfl if sfl > 0 else well_depth * 0.25)
+    first_depth = max(first_depth, 1.0)
+    p_ko_at_first = p_ko + g_s * first_depth
+    g_kill = p_ko_at_first / first_depth
+    kill = (g_kill * d_arr).tolist()
+
+    zig_x, zig_y = build_valve_zigzag(case)
+
+    depth_list = d_arr.tolist()
+    return {
+        "PKO": (pko, depth_list),
+        "PSO": (pso, depth_list),
+        "Tubing": (tubing, depth_list),
+        "Kill Fluid": (kill, depth_list),
+        "SFL": (sfl_line, depth_list),
+        "WFL": (wfl_line, depth_list),
+        "Valve Zigzag": (zig_x, zig_y),
+    }
+
+
 # ---------------------------------------------------------------------------
 # Phase 4 — Detailed calculation builders
 # ---------------------------------------------------------------------------
@@ -820,115 +950,142 @@ with st.expander("Fluid Property Summary"):
         st.info("No fluid property data available.")
 
 # ---------------------------------------------------------------------------
-# Pressure profile visualization
+# Pressure profile visualization (Graphical method — 6 lines + valve zigzag)
 # ---------------------------------------------------------------------------
 st.divider()
 st.header("Pressure Profile Matrix")
 
+GRAPHICAL_LINE_STYLE = {
+    "PKO": dict(color="#1a1a1a", width=2.5, dash="solid"),
+    "PSO": dict(color="#e74c3c", width=2.5, dash="solid"),
+    "Tubing": dict(color="#2c3e50", width=2.5, dash="solid"),
+    "Kill Fluid": dict(color="#e74c3c", width=2.0, dash="dash"),
+    "SFL": dict(color="#2980b9", width=2.0, dash="solid"),
+    "WFL": dict(color="#d35400", width=2.0, dash="dot"),
+    "Valve Zigzag": dict(color="#27ae60", width=3.5, dash="solid"),
+}
 
-def build_pressure_profiles(case: dict) -> tuple[list[float], list[float], list[float]]:
-    well_depth = case.get("well_depth", 5000.0)
-    depths = list(range(0, int(well_depth) + 1, 25))
-    if depths[-1] != int(well_depth):
-        depths.append(int(well_depth))
-
-    p_ko = case.get("p_ko", 900.0)
-    p_so = case.get("p_so", 850.0)
-    g_s = case.get("g_s", 0.5)
-    g_u = case.get("g_u", 0.15)
-    p_wh = case.get("p_wh", 200.0)
-    valves = case.get("valve_depths", [])
-
-    p_casing = []
-    p_kill = []
-
-    for d in depths:
-        valves_above = sum(1 for v in valves if v <= d)
-        p_casing.append(_p_casing(d, p_ko, g_s, max(valves_above, 1)))
-        p_so_at_d = p_so - 25.0 * max(valves_above - 1, 0)
-        p_kill.append(_p_kill(d, p_so_at_d, g_u, p_wh))
-
-    return depths, p_casing, p_kill
-
+graphical_cases = {
+    name: case
+    for name, case in st.session_state.gas_lift_cases.items()
+    if case.get("method") == "Graphical"
+}
 
 fig = go.Figure()
 
-case_colors = [
-    "#1f77b4",
-    "#ff7f0e",
-    "#2ca02c",
-    "#d62728",
-    "#9467bd",
-    "#8c564b",
-    "#e377c2",
-    "#7f7f7f",
-]
-
-for idx, (name, case) in enumerate(st.session_state.gas_lift_cases.items()):
-    color = case_colors[idx % len(case_colors)]
-    depths, p_casing, p_kill = build_pressure_profiles(case)
-
-    fig.add_trace(
-        go.Scatter(
-            x=p_casing,
-            y=depths,
-            mode="lines",
-            name=f"{name} — Casing",
-            line=dict(color=color, width=2),
-            legendgroup=name,
-        )
+if not graphical_cases:
+    st.info(
+        "Pressure profile diagram is available for **Graphical** method cases only. "
+        "Switch the active case to Graphical or create a new graphical scenario."
     )
-    fig.add_trace(
-        go.Scatter(
-            x=p_kill,
-            y=depths,
-            mode="lines",
-            name=f"{name} — Kill/Tubing",
-            line=dict(color=color, width=2, dash="dot"),
-            legendgroup=name,
-        )
+else:
+    for case_name, case in graphical_cases.items():
+        lines = build_graphical_pressure_lines(case)
+        prefix = case_name if len(graphical_cases) > 1 else ""
+
+        for line_name, (pressures, depths) in lines.items():
+            if not pressures or not depths:
+                continue
+            style = GRAPHICAL_LINE_STYLE[line_name]
+            label = f"{prefix} — {line_name}" if prefix else line_name
+            fig.add_trace(
+                go.Scatter(
+                    x=pressures,
+                    y=depths,
+                    mode="lines",
+                    name=label,
+                    line=dict(color=style["color"], width=style["width"], dash=style["dash"]),
+                    legendgroup=case_name,
+                    hovertemplate=(
+                        f"{line_name}<br>Pressure: %{{x:.1f}} psi<br>Depth: %{{y:.1f}} ft<extra></extra>"
+                    ),
+                )
+            )
+
+        # Valve depth markers on zigzag horizontals
+        valves = case.get("valve_depths", [])
+        p_wh = case.get("p_wh", 100.0)
+        p_ko = case.get("p_ko", 1000.0)
+        g_s = case.get("g_s", 0.5)
+        g_u = case.get("g_u", 0.125)
+        for i, d_v in enumerate(valves):
+            g_si = g_s - 0.022 * max(i, 0)
+            p_t = p_wh + g_u * d_v
+            p_c = p_ko + g_si * d_v
+            fig.add_trace(
+                go.Scatter(
+                    x=[p_t, p_c],
+                    y=[d_v, d_v],
+                    mode="markers+text",
+                    name=f"{case_name} — Valve {i + 1}" if len(graphical_cases) > 1 else f"Valve {i + 1}",
+                    marker=dict(symbol="diamond", size=9, color="#f1c40f", line=dict(width=1, color="#fff")),
+                    text=[f"V{i + 1}", ""],
+                    textposition="top center",
+                    textfont=dict(size=10, color="#f1c40f"),
+                    legendgroup=f"{case_name}_valves",
+                    showlegend=False,
+                    hovertemplate=(
+                        f"Valve {i + 1}<br>Depth: {d_v:.1f} ft<br>"
+                        f"Tubing: {p_t:.1f} psi<br>Casing: {p_c:.1f} psi<extra></extra>"
+                    ),
+                )
+            )
+
+        # SFL horizontal reference
+        sfl = case.get("sfl", 0.0)
+        if sfl > 0:
+            fig.add_shape(
+                type="line",
+                x0=0,
+                x1=max(lines["PKO"][0]) * 1.05 if lines["PKO"][0] else 3000,
+                y0=sfl,
+                y1=sfl,
+                line=dict(color="rgba(41, 128, 185, 0.45)", width=1.5, dash="dot"),
+                layer="below",
+            )
+            fig.add_annotation(
+                x=0,
+                y=sfl,
+                xref="x",
+                yref="y",
+                text="SFL",
+                showarrow=False,
+                xanchor="left",
+                font=dict(color="#2980b9", size=11),
+            )
+
+    x_max = 500.0
+    for case in graphical_cases.values():
+        lines = build_graphical_pressure_lines(case)
+        for pressures, _ in lines.values():
+            if pressures:
+                x_max = max(x_max, max(pressures))
+
+    fig.update_layout(
+        title="Continuous Gas Lift — Graphical Pressure vs. True Vertical Depth",
+        height=700,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        margin=dict(l=60, r=40, t=90, b=60),
+        hovermode="closest",
+        plot_bgcolor="rgba(30,30,30,0.3)",
+    )
+    fig.update_xaxes(
+        title_text="Pr (psi / psig)",
+        range=[0, x_max * 1.08],
+        showgrid=True,
+        gridcolor="rgba(255,255,255,0.08)",
+    )
+    fig.update_yaxes(
+        autorange="reversed",
+        title_text="True Vertical Depth (ft)",
+        showgrid=True,
+        gridcolor="rgba(255,255,255,0.08)",
     )
 
-all_valve_depths: set[float] = set()
-for case in st.session_state.gas_lift_cases.values():
-    for vd in case.get("valve_depths", []):
-        all_valve_depths.add(vd)
-
-x_max = max(
-    [
-        max(p_casing)
-        for _, case in st.session_state.gas_lift_cases.items()
-        for _, p_casing, _ in [build_pressure_profiles(case)]
-    ]
-    + [1000.0]
-)
-
-for vd in sorted(all_valve_depths):
-    fig.add_shape(
-        type="line",
-        x0=0,
-        x1=x_max * 1.05,
-        y0=vd,
-        y1=vd,
-        line=dict(color="rgba(120, 120, 120, 0.55)", width=1, dash="dash"),
-        layer="below",
-    )
-
-fig.update_layout(
-    title="Continuous Gas Lift — Pressure vs. True Vertical Depth",
-    height=650,
-    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-    margin=dict(l=60, r=40, t=80, b=60),
-    hovermode="closest",
-)
-
-fig.update_yaxes(autorange="reversed", title_text="True Vertical Depth (ft)")
-fig.update_xaxes(title_text="Pressure Profile Matrix (psi / psig)")
-
-st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, use_container_width=True)
 
 st.divider()
 st.caption(
-    "Valve depths are recalculated continuously for every case whenever inputs change. "
-    "Fluid properties and temperature corrections are applied in the Calculation Details section."
+    "Graphical diagram shows six design lines (SFL, WFL, PSO, PKO, Kill Fluid, Tubing) "
+    "and the valve unloading zigzag. Analytical cases are excluded from this plot."
 )
