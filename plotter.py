@@ -15,6 +15,7 @@ from pressure_engines import (
     operating_surface_pressure,
     pressures_at_valve,
     design_limit_from_case,
+    find_line_intersection,
 )
 from valve_engine import resolve_sfl
 
@@ -24,14 +25,61 @@ def _tubing_operating_pressure(p_so: float, g_u: float, valve_number: int, depth
     return p_so_n + g_u * depth
 
 
+def _kill_fluid_gradient(case: dict, first_valve_depth: float, p_ko: float, g_s: float, g_u: float) -> float:
+    """G_kill = P_ko(D1) / D1 — same gradient as the kill-fluid reference line."""
+    if first_valve_depth <= 0:
+        return g_u
+    p_ko_at_first = casing_pressure_at_depth(first_valve_depth, p_ko, g_s, 1)
+    return p_ko_at_first / first_valve_depth
+
+
+def _casing_meets_tubing_depth(
+    d_start: float,
+    d_search_to: float,
+    p_ko: float,
+    g_casing: float,
+    p_so: float,
+    g_u: float,
+    target_valve_num: int,
+    step: float,
+) -> tuple[float, float]:
+    """
+    Depth/pressure where Pc(D) = Pt(D) for the next operating tubing line.
+    Falls back to the scheduled valve depth on the blue line when no crossing exists.
+    """
+    import numpy as np
+
+    p_so_n = operating_surface_pressure(p_so, target_valve_num)
+    depths = np.arange(d_start, d_search_to + step * 0.01, step)
+    if depths.size == 0:
+        depths = np.array([d_start, d_search_to])
+    elif depths[-1] < d_search_to:
+        depths = np.append(depths, d_search_to)
+
+    casing_p = p_ko + g_casing * depths
+    tubing_p = p_so_n + g_u * depths
+    ix_d, ix_p = find_line_intersection(
+        casing_p, tubing_p, depths, search_start_depth=d_start + 0.1, step=step
+    )
+    if ix_d is not None and ix_d > d_start:
+        return float(ix_d), float(ix_p)
+    p_at_target = p_so_n + g_u * d_search_to
+    return float(d_search_to), float(p_at_target)
+
+
 def build_valve_zigzag(case: dict, step: float = 10.0) -> tuple[list[float], list[float]]:
-    """Valve unloading zigzag: tubing → horizontal bridge to operating line → casing gas diagonal."""
+    """
+    Continuous valve unloading path per UTM equations:
+      1. Kill fluid from surface: P = G_kill × D
+      2. At each valve: horizontal bridge ends on operating tubing (blue): Pt = P_so_n + G_u × D
+      3. Casing gas diagonal: P = P_ko + G_s_adj × D until it meets the next blue tubing line
+      4. After the last valve: follow the blue operating tubing line to the design limit
+    """
     plot_depth = design_limit_from_case(case)
-    p_wh = case.get("p_wh", 100.0)
-    p_ko = case.get("p_ko", 950.0)
-    p_so = case.get("p_so", 900.0)
-    g_s = case.get("g_s", 0.5)
-    g_u = case.get("g_u", 0.125)
+    p_ko = float(case.get("p_ko", 950.0))
+    p_so = float(case.get("p_so", 900.0))
+    g_s = float(case.get("g_s", 0.5))
+    g_u = float(case.get("g_u", 0.125))
     valves = case.get("valve_depths", [])
 
     if not valves:
@@ -41,43 +89,72 @@ def build_valve_zigzag(case: dict, step: float = 10.0) -> tuple[list[float], lis
 
     xs: list[float] = []
     ys: list[float] = []
+    d1 = float(valves[0])
+    g_kill = _kill_fluid_gradient(case, d1, p_ko, g_s, g_u)
 
-    def break_line() -> None:
+    def append_point(pressure: float, depth: float) -> None:
+        xs.append(float(pressure))
+        ys.append(float(depth))
+
+    def break_before_casing_segment() -> None:
+        """Break trace so gas injection (Pc jump) is not drawn past the blue line."""
         if xs and not (isinstance(xs[-1], float) and np.isnan(xs[-1])):
             xs.append(float("nan"))
             ys.append(float("nan"))
 
-    def add_line(d_start: float, d_end: float, pressure_fn) -> None:
+    def add_depth_line(d_start: float, d_end: float, pressure_fn) -> None:
         if d_end < d_start:
             return
         depths = np.arange(d_start, d_end + step * 0.01, step)
         if depths.size == 0 or depths[-1] < d_end:
             depths = np.append(depths, d_end)
-        for d in depths:
-            xs.append(float(pressure_fn(d)))
-            ys.append(float(d))
+        for j, d in enumerate(depths):
+            p = float(pressure_fn(d))
+            if (
+                j == 0
+                and xs
+                and ys[-1] == d
+                and abs(xs[-1] - p) < 0.5
+                and not (isinstance(xs[-1], float) and np.isnan(xs[-1]))
+            ):
+                continue
+            append_point(p, d)
 
-    add_line(0.0, valves[0], lambda d: p_wh + g_u * d)
+    # Step 1 — kill fluid from surface to valve 1 (SFL)
+    add_depth_line(0.0, d1, lambda d: g_kill * d)
 
     for i, d_v in enumerate(valves):
         valve_num = i + 1
+        d_v = float(d_v)
         p_blue = _tubing_operating_pressure(p_so, g_u, valve_num, d_v)
 
+        # Step 2 — horizontal bridge ends on the blue operating tubing line (valve 1 only)
         if i == 0:
-            p_start = p_wh + g_u * d_v
-            if abs(p_blue - p_start) > 0.5:
-                xs.extend([p_start, p_blue])
-                ys.extend([d_v, d_v])
+            p_arrival = g_kill * d_v
+            if abs(p_blue - p_arrival) > 0.5:
+                append_point(p_blue, d_v)
 
         if i < len(valves) - 1:
             next_valve_num = valve_num + 1
             g_seg = casing_gradient_for_valve_number(g_s, next_valve_num)
-            d_end = valves[i + 1]
-            break_line()
-            add_line(d_v, d_end, lambda d, gs=g_seg: p_ko + gs * d)
+            d_target = float(valves[i + 1])
+            d_end, p_end = _casing_meets_tubing_depth(
+                d_v,
+                max(d_target, d_v + step),
+                p_ko,
+                g_seg,
+                p_so,
+                g_u,
+                next_valve_num,
+                step,
+            )
+
+            break_before_casing_segment()
+            add_depth_line(d_v, d_end, lambda d, gs=g_seg: p_ko + gs * d)
+            xs[-1] = p_end
+            ys[-1] = d_end
         elif plot_depth > d_v:
-            break_line()
-            add_line(
+            add_depth_line(
                 d_v,
                 plot_depth,
                 lambda d, vn=valve_num: _tubing_operating_pressure(p_so, g_u, vn, d),
