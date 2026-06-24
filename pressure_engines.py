@@ -6,6 +6,19 @@ import numpy as np
 
 DEPTH_STEP_FT = 25.0
 GRADIENT_SHIFT_PER_VALVE = 0.022
+DEFAULT_DESIGN_LIMIT_FT = 5550.0
+
+
+def plotting_depth(well_depth: float, design_limit_depth: float) -> float:
+    """Maximum depth shown on pressure-depth diagrams."""
+    return min(float(well_depth), float(design_limit_depth))
+
+
+def design_limit_from_case(case: dict) -> float:
+    """Resolve effective design limit for a case (capped by well depth)."""
+    well_depth = float(case.get("well_depth", 8000.0))
+    limit = float(case.get("design_limit_depth", case.get("design_limit", DEFAULT_DESIGN_LIMIT_FT)))
+    return plotting_depth(well_depth, limit)
 
 
 def depth_array(well_depth: float, step: float = DEPTH_STEP_FT) -> np.ndarray:

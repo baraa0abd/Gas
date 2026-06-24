@@ -22,6 +22,7 @@ DEFAULT_CASE = {
     "g_s": 0.5,
     "g_u": 0.15,
     "sfl": 0.0,
+    "design_limit_depth": 5550.0,
     "valve_depths": [],
     # Phase 1 — Fluid properties
     "oil_api_gravity": 35.0,
@@ -60,6 +61,7 @@ if "gas_lift_cases" not in st.session_state:
             "g_s": 0.5,
             "g_u": 0.125,
             "sfl": 3407.0,
+            "design_limit_depth": 5550.0,
             "valve_depths": [3407.0, 3900.0, 4400.0, 4700.0],
             "oil_api_gravity": 40.0,
             "gas_gravity": 0.65,
@@ -396,6 +398,7 @@ CASE_WIDGET_FIELDS: dict[str, str] = {
     "g_s": "g_s",
     "g_u": "g_u",
     "sfl": "sfl",
+    "design_limit_depth": "design_limit",
     "oil_api_gravity": "oil_api",
     "gas_gravity": "gas_grav",
     "water_cut_percent": "water_cut",
@@ -555,6 +558,14 @@ with st.sidebar:
             step=50.0,
             key=widget_key(active_case, "sfl"),
             help="Used by the Graphical method for Valve 1 depth.",
+        )
+        st.number_input(
+            "Design Limit Depth (ft)",
+            min_value=2000.0,
+            max_value=15000.0,
+            step=50.0,
+            key=widget_key(active_case, "design_limit_depth"),
+            help="Maximum depth for gas lift design. Pressure lines stop here (typical: 5550 ft).",
         )
 
         st.divider()

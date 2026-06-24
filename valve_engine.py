@@ -8,12 +8,12 @@ from pressure_engines import (
     calculate_sfl,
     calculate_tubing_pressure_line,
     casing_gradient_for_valve_number,
+    design_limit_from_case,
     find_line_intersection,
     ipo_spacing_depth,
     operating_surface_pressure,
 )
 
-DESIGN_LIMIT_FT = 5550.0
 MAX_VALVES = 12
 
 
@@ -48,7 +48,7 @@ def design_valve_spacing_graphical(case: dict) -> tuple[list[float], list[dict]]
     """
     p = _extract_case(case)
     well_depth = p["well_depth"]
-    design_limit = min(DESIGN_LIMIT_FT, well_depth)
+    design_limit = design_limit_from_case(case)
     sfl = resolve_sfl(case)
 
     if sfl <= 0 or sfl > design_limit:
@@ -188,7 +188,7 @@ def validate_valve_spacing(case: dict, valve_depths: list[float]) -> list[dict]:
     """Engineering validation checks on valve spacing."""
     results: list[dict] = []
     well_depth = float(case.get("well_depth", 5000.0))
-    design_limit = min(DESIGN_LIMIT_FT, well_depth)
+    design_limit = design_limit_from_case(case)
     p_ko = float(case.get("p_ko", 900.0))
     p_so = float(case.get("p_so", 850.0))
     p_wh = float(case.get("p_wh", 200.0))
