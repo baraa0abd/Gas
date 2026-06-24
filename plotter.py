@@ -19,12 +19,17 @@ from pressure_engines import (
 from valve_engine import resolve_sfl
 
 
+def _tubing_operating_pressure(p_so: float, g_u: float, valve_number: int, depth: float) -> float:
+    p_so_n = operating_surface_pressure(p_so, valve_number)
+    return p_so_n + g_u * depth
+
+
 def build_valve_zigzag(case: dict, step: float = 10.0) -> tuple[list[float], list[float]]:
-    """Valve unloading zigzag: tubing → horizontal bridge → casing gas diagonal."""
-    well_depth = case.get("well_depth", 8000.0)
+    """Valve unloading zigzag: tubing → horizontal bridge to operating line → casing gas diagonal."""
     plot_depth = design_limit_from_case(case)
     p_wh = case.get("p_wh", 100.0)
     p_ko = case.get("p_ko", 950.0)
+    p_so = case.get("p_so", 900.0)
     g_s = case.get("g_s", 0.5)
     g_u = case.get("g_u", 0.125)
     valves = case.get("valve_depths", [])
@@ -36,6 +41,11 @@ def build_valve_zigzag(case: dict, step: float = 10.0) -> tuple[list[float], lis
 
     xs: list[float] = []
     ys: list[float] = []
+
+    def break_line() -> None:
+        if xs and not (isinstance(xs[-1], float) and np.isnan(xs[-1])):
+            xs.append(float("nan"))
+            ys.append(float("nan"))
 
     def add_line(d_start: float, d_end: float, pressure_fn) -> None:
         if d_end < d_start:
@@ -50,17 +60,28 @@ def build_valve_zigzag(case: dict, step: float = 10.0) -> tuple[list[float], lis
     add_line(0.0, valves[0], lambda d: p_wh + g_u * d)
 
     for i, d_v in enumerate(valves):
-        g_si = casing_gradient_for_valve_number(g_s, i + 1)
-        p_t = p_wh + g_u * d_v
-        p_c = p_ko + g_si * d_v
-        xs.extend([p_t, p_c])
-        ys.extend([d_v, d_v])
+        valve_num = i + 1
+        p_blue = _tubing_operating_pressure(p_so, g_u, valve_num, d_v)
+
+        if i == 0:
+            p_start = p_wh + g_u * d_v
+            if abs(p_blue - p_start) > 0.5:
+                xs.extend([p_start, p_blue])
+                ys.extend([d_v, d_v])
+
         if i < len(valves) - 1:
-            add_line(d_v, valves[i + 1], lambda d, gs=g_si: p_ko + gs * d)
-        else:
-            end_depth = plot_depth
-            if end_depth > d_v:
-                add_line(d_v, end_depth, lambda d: p_wh + g_u * d)
+            next_valve_num = valve_num + 1
+            g_seg = casing_gradient_for_valve_number(g_s, next_valve_num)
+            d_end = valves[i + 1]
+            break_line()
+            add_line(d_v, d_end, lambda d, gs=g_seg: p_ko + gs * d)
+        elif plot_depth > d_v:
+            break_line()
+            add_line(
+                d_v,
+                plot_depth,
+                lambda d, vn=valve_num: _tubing_operating_pressure(p_so, g_u, vn, d),
+            )
 
     return xs, ys
 
