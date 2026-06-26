@@ -1,0 +1,576 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Gas Lift Valve Spacing – Graphical Method</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@3"></script>
+  <style>
+    :root {
+      --bg: #0d1117;
+      --panel: #161b22;
+      --border: #30363d;
+      --text: #e6edf3;
+      --muted: #8b949e;
+      --accent: #f0a500;
+      --error: #f85149;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: "JetBrains Mono", "Courier New", monospace;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      line-height: 1.5;
+    }
+    header {
+      padding: 1rem 1.5rem;
+      border-bottom: 1px solid var(--border);
+      background: var(--panel);
+    }
+    header h1 { font-size: 1.1rem; color: var(--accent); font-weight: 600; }
+    header p { font-size: 0.75rem; color: var(--muted); margin-top: 0.25rem; }
+    .layout {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 1rem;
+      padding: 1rem;
+      max-width: 1600px;
+      margin: 0 auto;
+    }
+    .inputs {
+      flex: 0 0 30%;
+      min-width: 280px;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1rem;
+    }
+    .inputs h2 {
+      color: var(--accent);
+      font-size: 0.9rem;
+      margin-bottom: 1rem;
+      padding-bottom: 0.5rem;
+      border-bottom: 1px solid var(--border);
+    }
+    label {
+      display: block;
+      font-size: 0.7rem;
+      color: var(--muted);
+      margin: 0.65rem 0 0.2rem;
+    }
+    input, select {
+      width: 100%;
+      padding: 0.45rem 0.5rem;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      color: var(--text);
+      font-family: inherit;
+      font-size: 0.8rem;
+    }
+    input:focus, select:focus {
+      outline: none;
+      border-color: var(--accent);
+    }
+    button {
+      width: 100%;
+      margin-top: 1.25rem;
+      padding: 0.65rem;
+      background: var(--accent);
+      color: #0d1117;
+      border: none;
+      border-radius: 4px;
+      font-family: inherit;
+      font-size: 0.85rem;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    button:hover { filter: brightness(1.08); }
+    .chart-wrap {
+      flex: 1 1 65%;
+      min-width: 320px;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 0.75rem;
+      position: relative;
+      min-height: 520px;
+    }
+    .chart-wrap canvas { width: 100% !important; height: 100% !important; }
+    .error-box {
+      display: none;
+      margin: 0 1rem 1rem;
+      max-width: 1600px;
+      margin-left: auto;
+      margin-right: auto;
+      padding: 0.75rem 1rem;
+      background: rgba(248, 81, 73, 0.12);
+      border: 1px solid var(--error);
+      border-radius: 6px;
+      color: var(--error);
+      font-size: 0.8rem;
+    }
+    .error-box.visible { display: block; }
+    .results {
+      width: 100%;
+      max-width: 1600px;
+      margin: 0 auto 1.5rem;
+      padding: 0 1rem;
+    }
+    .results h2 {
+      color: var(--accent);
+      font-size: 0.9rem;
+      margin-bottom: 0.75rem;
+    }
+    .summary {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 1rem;
+      margin-bottom: 1rem;
+      font-size: 0.75rem;
+    }
+    .summary span { color: var(--muted); }
+    .summary strong { color: var(--accent); }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.75rem;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    th, td {
+      padding: 0.55rem 0.75rem;
+      text-align: left;
+      border-bottom: 1px solid var(--border);
+    }
+    th { background: #1c2128; color: var(--accent); }
+    tr:last-child td { border-bottom: none; }
+    @media (max-width: 768px) {
+      .inputs, .chart-wrap { flex: 1 1 100%; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Gas Lift Valve Spacing – Graphical Method</h1>
+    <p>Pressure vs. depth diagram with automatic valve placement (coordinate geometry)</p>
+  </header>
+
+  <div id="errorBox" class="error-box"></div>
+
+  <div class="layout">
+    <aside class="inputs">
+      <h2>Well Parameters</h2>
+      <label for="WD">Well Depth WD (ft)</label>
+      <input id="WD" type="number" value="6000" step="50" />
+
+      <label for="Pwh">Wellhead Pressure Pwh (psia)</label>
+      <input id="Pwh" type="number" value="200" step="10" />
+
+      <label for="Pwf">Bottom-hole Flowing Pressure Pwf (psia)</label>
+      <input id="Pwf" type="number" value="1500" step="10" />
+
+      <label for="Pr">Reservoir Pressure Pr (psia)</label>
+      <input id="Pr" type="number" value="2200" step="10" />
+
+      <label for="Gs">Kill Fluid Gradient Gs (psi/ft)</label>
+      <input id="Gs" type="number" value="0.5" step="0.01" />
+
+      <label for="Gfb">Formation Fluid Gradient Gfb (psi/ft)</label>
+      <input id="Gfb" type="number" value="0.5" step="0.01" placeholder="default = Gs" />
+
+      <label for="Psep">Separator / Surface Injection Psep (psia)</label>
+      <input id="Psep" type="number" value="150" step="10" />
+
+      <label for="Pko">Gas Injection Pressure Pko (psia)</label>
+      <input id="Pko" type="number" value="1000" step="10" />
+
+      <label for="Gko">Gas Gradient in Tubing Gko (psi/ft)</label>
+      <input id="Gko" type="number" value="0.025" step="0.001" />
+
+      <label for="Gt">Producing Fluid Gradient Gt (psi/ft)</label>
+      <input id="Gt" type="number" value="0.2" step="0.01" />
+
+      <label for="maxP">Max Pressure Axis (psia)</label>
+      <input id="maxP" type="number" value="2500" step="100" />
+
+      <label for="unloading_target">Unloading Target</label>
+      <select id="unloading_target">
+        <option value="separator">Unloading to Separator (Psurface = Psep)</option>
+        <option value="surface" selected>Unloading to Surface (Psurface = Pwh)</option>
+        <option value="pit">Unloading to Pit (Psurface = 0)</option>
+      </select>
+
+      <label for="valve_type">Valve Type</label>
+      <select id="valve_type">
+        <option value="balanced" selected>Balanced (Pso − 25)</option>
+        <option value="unbalanced">Unbalanced (draw on Pso line)</option>
+      </select>
+
+      <label for="max_valves">Max Valve Count</label>
+      <input id="max_valves" type="number" value="8" min="1" max="20" step="1" />
+
+      <button type="button" onclick="runCalculation()">Calculate &amp; Plot</button>
+    </aside>
+
+    <section class="chart-wrap">
+      <canvas id="chart"></canvas>
+    </section>
+  </div>
+
+  <section class="results">
+    <h2>Results</h2>
+    <div class="summary" id="summary"></div>
+    <table>
+      <thead>
+        <tr>
+          <th>Valve #</th>
+          <th>Depth DV (ft)</th>
+          <th>Pso at Depth (psia)</th>
+          <th>Valve Pressure Pv (psia)</th>
+        </tr>
+      </thead>
+      <tbody id="valveTable"></tbody>
+    </table>
+  </section>
+
+  <script>
+    let chart = null;
+
+    function num(id) {
+      const el = document.getElementById(id);
+      const v = parseFloat(el.value);
+      return Number.isFinite(v) ? v : NaN;
+    }
+
+    function showError(msg) {
+      const box = document.getElementById("errorBox");
+      box.textContent = msg;
+      box.classList.add("visible");
+    }
+
+    function clearError() {
+      document.getElementById("errorBox").classList.remove("visible");
+    }
+
+    /** Pressure at depth D on line through (P1,D1) and (P2,D2). */
+    function pressureAtDepth(P1, D1, P2, D2, D) {
+      if (Math.abs(D2 - D1) < 1e-9) return P1;
+      return P1 + ((P2 - P1) / (D2 - D1)) * (D - D1);
+    }
+
+    /** Intersect two lines defined by two points each. Returns {D, P} or null. */
+    function intersectLines(a1, a2, b1, b2) {
+      const [P1, D1] = a1;
+      const [P2, D2] = a2;
+      const [P3, D3] = b1;
+      const [P4, D4] = b2;
+      const m1 = Math.abs(D2 - D1) < 1e-9 ? 0 : (P2 - P1) / (D2 - D1);
+      const m2 = Math.abs(D4 - D3) < 1e-9 ? 0 : (P4 - P3) / (D4 - D3);
+      const c1 = P1 - m1 * D1;
+      const c2 = P3 - m2 * D3;
+      if (Math.abs(m1 - m2) < 1e-9) return null;
+      const D = (c2 - c1) / (m1 - m2);
+      const P = m1 * D + c1;
+      return { D, P };
+    }
+
+    /** Pressure on kill-fluid line: P = Psurface + Gs * D */
+    function killPressure(D, Psurface, Gs) {
+      return Psurface + Gs * D;
+    }
+
+    /** Pressure on Pso line: P = Pko + Gko * D */
+    function psoPressure(D, Pko, Gko) {
+      return Pko + Gko * D;
+    }
+
+    function runCalculation() {
+      clearError();
+
+      const WD = num("WD");
+      const Pwh = num("Pwh");
+      const Pwf = num("Pwf");
+      const Pr = num("Pr");
+      const Gs = num("Gs");
+      let Gfb = num("Gfb");
+      const Psep = num("Psep");
+      const Pko = num("Pko");
+      const Gko = num("Gko");
+      const Gt = num("Gt");
+      const maxP = num("maxP");
+      const maxValves = Math.max(1, Math.floor(num("max_valves")));
+      const unloading = document.getElementById("unloading_target").value;
+      const valveType = document.getElementById("valve_type").value;
+      const margin = valveType === "balanced" ? 25 : 0;
+
+      if ([WD, Pwh, Pwf, Pr, Gs, Psep, Pko, Gko, Gt, maxP].some((v) => !Number.isFinite(v))) {
+        showError("Please fill in all required numeric fields.");
+        return;
+      }
+      if (!Number.isFinite(Gfb) || Gfb <= 0) Gfb = Gs;
+      if (Pwf > Pr) {
+        showError("Invalid input: Pwf cannot exceed reservoir pressure Pr.");
+        return;
+      }
+      if (Gs <= 0 || Gfb <= 0 || Gko <= 0 || Gt <= 0 || WD <= 0) {
+        showError("Gradients and well depth must be positive.");
+        return;
+      }
+
+      let Psurface;
+      if (unloading === "separator") Psurface = Psep;
+      else if (unloading === "surface") Psurface = Pwh;
+      else Psurface = 0;
+
+      // --- Reference line anchor points ---
+      const sflD2 = WD - Pr / Gs;
+      const sflP1 = Pr, sflD1 = 0;
+      const sflP2 = 0, sflD2c = sflD2;
+
+      const wflD2 = WD - Pwf / Gfb;
+      const wflP1 = Pwf, wflD1 = WD;
+      const wflP2 = 0, wflD2c = wflD2;
+
+      const psoP1 = Pko, psoD1 = 0;
+      const psoP2 = Pko + Gko * WD, psoD2 = WD;
+
+      const killD2 = (2000 - Psurface) / Gs;
+      const killP1 = Psurface, killD1 = 0;
+      const killP2 = 2000, killD2c = killD2;
+
+      // POB = WFL ∩ Pso
+      const pob = intersectLines(
+        [wflP2, wflD2c], [wflP1, wflD1],
+        [psoP1, psoD1], [psoP2, psoD2]
+      );
+      if (!pob || pob.D < 0 || pob.D > WD) {
+        showError("No valid POB intersection found (WFL and Pso may be parallel or do not cross in range).");
+        return;
+      }
+
+      const DPOI_depth = Math.max(pob.D - 100, 0);
+      const DPOI_pressure = pob.P;
+
+      const tubP1 = Pwh, tubD1 = 0;
+      const tubP2 = DPOI_pressure, tubD2 = DPOI_depth;
+
+      // --- Valve placement ---
+      const valves = [];
+
+      // Valve 1: Kill fluid ∩ Tubing (line 4)
+      const ip1 = intersectLines(
+        [killP1, killD1], [killP2, killD2c],
+        [tubP1, tubD1], [tubP2, tubD2]
+      );
+      if (!ip1 || ip1.D <= 0 || ip1.D > WD) {
+        showError("Valve 1: Kill fluid line does not intersect tubing line in valid depth range.");
+        return;
+      }
+
+      let DV = ip1.D;
+      let PsoAt = psoPressure(DV, Pko, Gko);
+      let Pv = PsoAt - margin;
+      valves.push({ n: 1, DV, PsoAt, Pv });
+
+      // Valves 2+
+      while (valves.length < maxValves) {
+        const prev = valves[valves.length - 1];
+        const segP1 = prev.Pv;
+        const segD1 = prev.DV;
+
+        // Tubing segment from previous valve with slope Gt until kill intersection or DPOI
+        const killAtDpoi = killPressure(DPOI_depth, Psurface, Gs);
+        const segAtDpoi = segP1 + Gt * (DPOI_depth - segD1);
+
+        let DVn = null;
+        if (Math.abs(Gs - Gt) > 1e-9) {
+          const D_ix = (segP1 - Gt * segD1 - Psurface) / (Gs - Gt);
+          if (D_ix > segD1 + 0.5 && D_ix <= DPOI_depth) {
+            DVn = D_ix;
+          }
+        }
+
+        if (DVn === null) {
+          // Try intersection with extended kill through segment endpoint search
+          const ip = intersectLines(
+            [killP1, killD1], [killP2, killD2c],
+            [segP1, segD1], [segAtDpoi, DPOI_depth]
+          );
+          if (ip && ip.D > segD1 + 0.5 && ip.D <= DPOI_depth) DVn = ip.D;
+        }
+
+        if (DVn === null || DVn >= DPOI_depth - 0.5) break;
+
+        PsoAt = psoPressure(DVn, Pko, Gko);
+        Pv = PsoAt - margin;
+        valves.push({ n: valves.length + 1, DV: DVn, PsoAt, Pv });
+
+        if (DVn >= DPOI_depth) break;
+      }
+
+      // --- Build chart datasets (2-point lines) ---
+      function clipLine(P1, D1, P2, D2) {
+        return [
+          { x: Math.max(0, Math.min(maxP, P1)), y: Math.max(0, Math.min(WD, D1)) },
+          { x: Math.max(0, Math.min(maxP, P2)), y: Math.max(0, Math.min(WD, D2)) },
+        ];
+      }
+
+      const datasets = [
+        {
+          label: "Static Fluid Level (SFL)",
+          data: clipLine(sflP1, sflD1, sflP2, sflD2c),
+          borderColor: "#4FC3F7",
+          borderWidth: 2,
+          pointRadius: 0,
+          showLine: true,
+        },
+        {
+          label: "Well Flowing Pressure (WFL)",
+          data: clipLine(wflP1, wflD1, wflP2, wflD2c),
+          borderColor: "#81C784",
+          borderWidth: 2,
+          pointRadius: 0,
+          showLine: true,
+        },
+        {
+          label: "Operating Gas Pressure (Pso)",
+          data: clipLine(psoP1, psoD1, psoP2, psoD2),
+          borderColor: "#F0A500",
+          borderWidth: 2,
+          borderDash: [8, 4],
+          pointRadius: 0,
+          showLine: true,
+        },
+        {
+          label: "Tubing Pressure",
+          data: clipLine(tubP1, tubD1, tubP2, tubD2),
+          borderColor: "#CE93D8",
+          borderWidth: 2,
+          pointRadius: 0,
+          showLine: true,
+        },
+        {
+          label: "Kill Fluid",
+          data: clipLine(killP1, killD1, killP2, killD2c),
+          borderColor: "#EF9A9A",
+          borderWidth: 2,
+          borderDash: [2, 4],
+          pointRadius: 0,
+          showLine: true,
+        },
+      ];
+
+      // Valve horizontal lines + markers via annotation plugin
+      const annotations = {};
+
+      valves.forEach((v, i) => {
+        const key = "h" + i;
+        annotations[key] = {
+          type: "line",
+          yMin: v.DV,
+          yMax: v.DV,
+          xMin: 0,
+          xMax: v.PsoAt,
+          borderColor: "#FFD54F",
+          borderWidth: 2,
+        };
+        annotations["m" + i] = {
+          type: "point",
+          xValue: v.Pv,
+          yValue: v.DV,
+          backgroundColor: "#F0A500",
+          borderColor: "#F0A500",
+          radius: 7,
+          pointStyle: "triangle",
+          rotation: 90,
+        };
+      });
+
+      // POB marker
+      annotations.pob = {
+        type: "point",
+        xValue: pob.P,
+        yValue: pob.D,
+        backgroundColor: "#ffffff",
+        borderColor: "#F0A500",
+        radius: 5,
+        pointStyle: "circle",
+      };
+
+      const ctx = document.getElementById("chart").getContext("2d");
+      if (chart) chart.destroy();
+
+      chart = new Chart(ctx, {
+        type: "scatter",
+        data: { datasets },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          parsing: false,
+          plugins: {
+            legend: {
+              position: "top",
+              align: "end",
+              labels: { color: "#e6edf3", font: { family: "JetBrains Mono", size: 10 }, boxWidth: 14 },
+            },
+            annotation: { annotations },
+            tooltip: {
+              callbacks: {
+                label(ctx) {
+                  return `P: ${ctx.parsed.x.toFixed(1)} psia, D: ${ctx.parsed.y.toFixed(1)} ft`;
+                },
+              },
+            },
+          },
+          scales: {
+            x: {
+              type: "linear",
+              min: 0,
+              max: maxP,
+              title: { display: true, text: "Pressure (psia)", color: "#F0A500", font: { family: "JetBrains Mono" } },
+              ticks: { color: "#F0A500" },
+              grid: { color: "rgba(255,255,255,0.12)" },
+            },
+            y: {
+              type: "linear",
+              min: 0,
+              max: WD,
+              reverse: true,
+              title: { display: true, text: "Depth (ft)", color: "#F0A500", font: { family: "JetBrains Mono" } },
+              ticks: { color: "#F0A500" },
+              grid: { color: "rgba(255,255,255,0.12)" },
+            },
+          },
+        },
+      });
+
+      // Results table
+      document.getElementById("summary").innerHTML = `
+        <div><span>POB Depth:</span> <strong>${pob.D.toFixed(1)} ft</strong></div>
+        <div><span>POB Pressure:</span> <strong>${pob.P.toFixed(1)} psia</strong></div>
+        <div><span>DPOI Depth:</span> <strong>${DPOI_depth.toFixed(1)} ft</strong></div>
+        <div><span>Total Valves:</span> <strong>${valves.length}</strong></div>
+      `;
+
+      const tbody = document.getElementById("valveTable");
+      tbody.innerHTML = valves
+        .map(
+          (v) =>
+            `<tr><td>${v.n}</td><td>${v.DV.toFixed(1)}</td><td>${v.PsoAt.toFixed(1)}</td><td>${v.Pv.toFixed(1)}</td></tr>`
+        )
+        .join("");
+    }
+
+    window.addEventListener("load", runCalculation);
+  </script>
+</body>
+</html>
