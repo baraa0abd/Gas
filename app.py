@@ -1,16 +1,63 @@
+import sys
+from pathlib import Path
+
+# Ensure sibling modules (pressure_engines, valve_engine, plotter) resolve on Streamlit Cloud.
+_APP_DIR = Path(__file__).resolve().parent
+if str(_APP_DIR) not in sys.path:
+    sys.path.insert(0, str(_APP_DIR))
+
 import streamlit as st
 import pandas as pd
 import numpy as np
 
-from pressure_engines import (
-    casing_pressure_at_depth,
-    operating_surface_pressure,
-    wfl_depth,
-    valve_type_from_case,
-    operating_boundary_pressure,
-)
-from valve_engine import design_valves, validate_valve_spacing, resolve_sfl
-from plotter import plot_pressure_depth_diagram
+
+def _import_project_modules():
+    """Load local modules; fall back to explicit file loading if path lookup fails."""
+    import importlib
+    import importlib.util
+
+    def load_module(module_name: str, filename: str):
+        try:
+            return importlib.import_module(module_name)
+        except ImportError:
+            module_path = _APP_DIR / filename
+            if not module_path.is_file():
+                raise ImportError(
+                    f"Cannot import '{module_name}' and '{filename}' was not found in {_APP_DIR}"
+                ) from None
+            spec = importlib.util.spec_from_file_location(module_name, module_path)
+            if spec is None or spec.loader is None:
+                raise ImportError(f"Failed to load module spec for {filename}") from None
+            module = importlib.util.module_from_spec(spec)
+            sys.modules[module_name] = module
+            spec.loader.exec_module(module)
+            return module
+
+    pe = load_module("pressure_engines", "pressure_engines.py")
+    ve = load_module("valve_engine", "valve_engine.py")
+    pl = load_module("plotter", "plotter.py")
+    return pe, ve, pl
+
+
+try:
+    _pe, _ve, _pl = _import_project_modules()
+except ImportError as _import_error:
+    st.set_page_config(page_title="Gas Lift — Startup Error", layout="wide")
+    st.error("Failed to load application modules.")
+    st.exception(_import_error)
+    st.info(f"App directory: `{_APP_DIR}`")
+    st.info(f"Python path: `{sys.path[:3]}`")
+    st.stop()
+
+casing_pressure_at_depth = _pe.casing_pressure_at_depth
+operating_surface_pressure = _pe.operating_surface_pressure
+wfl_depth = _pe.wfl_depth
+valve_type_from_case = _pe.valve_type_from_case
+operating_boundary_pressure = _pe.operating_boundary_pressure
+design_valves = _ve.design_valves
+validate_valve_spacing = _ve.validate_valve_spacing
+resolve_sfl = _ve.resolve_sfl
+plot_pressure_depth_diagram = _pl.plot_pressure_depth_diagram
 
 # ---------------------------------------------------------------------------
 # Configuration & default case template
