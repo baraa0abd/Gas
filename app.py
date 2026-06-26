@@ -58,58 +58,45 @@ with st.sidebar:
     st.subheader("Retention time")
     custom_retention = st.checkbox("Custom retention time")
     oil_rec, water_rec, ret_note = recommend_retention_minutes(phase_mode, pressure_psia, temperature_f)
-    if not custom_retention:
-        st.info(ret_note)
-    retention_oil_min = st.number_input(
-        "Oil retention (min)",
-        min_value=0.1,
-        value=float(oil_rec),
-        step=0.5,
-        disabled=not custom_retention,
-    )
-    retention_water_min = retention_oil_min
-    if phase_mode == "3-phase":
-        retention_water_min = st.number_input(
-            "Water retention (min)",
-            min_value=0.1,
-            value=float(water_rec or oil_rec),
-            step=0.5,
-            disabled=not custom_retention,
-        )
+    if custom_retention:
+        retention_oil_min = st.number_input("Oil retention (min)", min_value=0.1, value=float(oil_rec), step=0.5)
+        retention_water_min = retention_oil_min
+        if phase_mode == "3-phase":
+            retention_water_min = st.number_input(
+                "Water retention (min)", min_value=0.1, value=float(water_rec or oil_rec), step=0.5
+            )
+    else:
+        retention_oil_min = float(oil_rec)
+        retention_water_min = float(water_rec or oil_rec)
+        st.caption(ret_note)
 
-    run = st.button("Run sizing", type="primary", use_container_width=True)
+payload = {
+    "separator_type": separator_type,
+    "phase_mode": phase_mode,
+    "gas_mmscfd": gas_mmscfd,
+    "oil_bopd": oil_bopd,
+    "water_bpd": water_bpd,
+    "api_gravity": api_gravity,
+    "sg_gas": sg_gas,
+    "sg_water": sg_water,
+    "pressure_psia": pressure_psia,
+    "temperature_f": temperature_f,
+    "z_factor": z_factor,
+    "k_factor": k_factor,
+    "shell_height_ft": shell_height_ft,
+    "liquid_fraction": liquid_fraction,
+    "custom_retention": custom_retention,
+    "retention_oil_min": retention_oil_min,
+    "retention_water_min": retention_water_min,
+}
 
-if run:
-    payload = {
-        "separator_type": separator_type,
-        "phase_mode": phase_mode,
-        "gas_mmscfd": gas_mmscfd,
-        "oil_bopd": oil_bopd,
-        "water_bpd": water_bpd,
-        "api_gravity": api_gravity,
-        "sg_gas": sg_gas,
-        "sg_water": sg_water,
-        "pressure_psia": pressure_psia,
-        "temperature_f": temperature_f,
-        "z_factor": z_factor,
-        "k_factor": k_factor,
-        "shell_height_ft": shell_height_ft,
-        "liquid_fraction": liquid_fraction,
-        "custom_retention": custom_retention,
-        "retention_oil_min": retention_oil_min,
-        "retention_water_min": retention_water_min,
-    }
-    try:
-        st.session_state.last_result = run_sizing(payload)["result"]
-        st.session_state.last_payload = payload
-    except Exception as exc:
-        st.error(f"Calculation failed: {exc}")
-
-if "last_result" not in st.session_state:
-    st.info("Configure inputs in the sidebar and click **Run sizing**.")
+try:
+    result = run_sizing(payload)["result"]
+except Exception as exc:
+    st.error("Calculation failed. Check your inputs.")
+    st.exception(exc)
     st.stop()
 
-result = st.session_state.last_result
 is_vertical = result["separator_type"] == "vertical"
 
 col1, col2, col3, col4 = st.columns(4)
@@ -127,6 +114,8 @@ left, right = st.columns(2)
 
 with left:
     st.subheader("Design constraints")
+    if not result["constraints"]:
+        st.warning("No constraint details returned — check slenderness limits.")
     for c in result["constraints"]:
         badge = " (governing)" if c["governing"] else ""
         with st.expander(f"{c['name']}{badge}", expanded=c["governing"]):
@@ -167,9 +156,8 @@ if curve:
         go.Scatter(x=df[x_col], y=df["oil_capacity_bopd"], name="Oil capacity (BOPD)", line=dict(color="#fbbf24")),
         secondary_y=True,
     )
-    if len(df):
-        fig.add_hline(y=df["required_gas_mmscfd"].iloc[0], line_dash="dash", line_color="#0ea5e9", secondary_y=False)
-        fig.add_hline(y=df["required_oil_bopd"].iloc[0], line_dash="dash", line_color="#f59e0b", secondary_y=True)
+    fig.add_hline(y=df["required_gas_mmscfd"].iloc[0], line_dash="dash", line_color="#0ea5e9", secondary_y=False)
+    fig.add_hline(y=df["required_oil_bopd"].iloc[0], line_dash="dash", line_color="#f59e0b", secondary_y=True)
     fig.update_xaxes(title_text=x_label)
     fig.update_yaxes(title_text="Gas (MMscfd)", secondary_y=False)
     fig.update_yaxes(title_text="Oil (BOPD)", secondary_y=True)
