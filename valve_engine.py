@@ -5,13 +5,16 @@ from __future__ import annotations
 from pressure_engines import (
     DEPTH_STEP_FT,
     calculate_casing_pressure_line,
-    calculate_sfl,
     calculate_tubing_pressure_line,
     casing_gradient_for_valve_number,
+    depth_array,
     design_limit_from_case,
     find_line_intersection,
     ipo_spacing_depth,
     operating_surface_pressure,
+    static_sfl_depth,
+    valve_type_from_case,
+    operating_boundary_pressure,
 )
 
 MAX_VALVES = 12
@@ -30,14 +33,10 @@ def _extract_case(case: dict) -> dict:
 
 
 def resolve_sfl(case: dict) -> float:
-    """Use provided SFL or calculate from static column."""
-    params = _extract_case(case)
-    if params["sfl_input"] > 0:
-        return round(params["sfl_input"], 1)
-    return round(
-        calculate_sfl(params["well_depth"], params["p_wh"], params["g_u"]),
-        1,
-    )
+    """Use provided SFL or calculate SFL = WD − Ps / Gs."""
+    if float(case.get("sfl", 0.0)) > 0:
+        return round(float(case["sfl"]), 1)
+    return round(static_sfl_depth(case), 1)
 
 
 def design_valve_spacing_graphical(case: dict) -> tuple[list[float], list[dict]]:
@@ -50,6 +49,7 @@ def design_valve_spacing_graphical(case: dict) -> tuple[list[float], list[dict]]
     well_depth = p["well_depth"]
     design_limit = design_limit_from_case(case)
     sfl = resolve_sfl(case)
+    vtype = valve_type_from_case(case)
 
     if sfl <= 0 or sfl > design_limit:
         return [], []
@@ -60,7 +60,7 @@ def design_valve_spacing_graphical(case: dict) -> tuple[list[float], list[dict]]
             "valve_number": 1,
             "depth_ft": sfl,
             "method": "SFL (Valve 1)",
-            "p_so_n": p["p_so"],
+            "p_so_n": operating_surface_pressure(p["p_so"], 1, vtype),
             "g_s_adj": p["g_s"],
         }
     ]
@@ -70,15 +70,19 @@ def design_valve_spacing_graphical(case: dict) -> tuple[list[float], list[dict]]
         if prev_depth >= design_limit:
             break
 
-        p_so_n = operating_surface_pressure(p["p_so"], valve_num)
+        p_so_n = operating_surface_pressure(p["p_so"], valve_num, vtype)
         g_s_adj = casing_gradient_for_valve_number(p["g_s"], valve_num)
 
         _, casing_p = calculate_casing_pressure_line(
             p["p_ko"], p["g_s"], well_depth, valve_num
         )
-        depths, tubing_p = calculate_tubing_pressure_line(
-            p["p_so"], p["g_u"], well_depth, valve_num
-        )
+        if vtype == "unbalanced":
+            depths = depth_array(well_depth, DEPTH_STEP_FT)
+            tubing_p = p["p_so"] + p["g_s"] * depths
+        else:
+            depths, tubing_p = calculate_tubing_pressure_line(
+                p["p_so"], p["g_u"], well_depth, valve_num, valve_type=vtype
+            )
 
         ix_depth, ix_pressure = find_line_intersection(
             casing_p,
@@ -106,7 +110,10 @@ def design_valve_spacing_graphical(case: dict) -> tuple[list[float], list[dict]]
 
         if ix_depth is not None and ix_depth > prev_depth:
             p_c_ix = p["p_ko"] + g_s_adj * ix_depth
-            p_t_ix = p_so_n + p["g_u"] * ix_depth
+            if vtype == "unbalanced":
+                p_t_ix = p["p_so"] + p["g_s"] * ix_depth
+            else:
+                p_t_ix = p_so_n + p["g_u"] * ix_depth
             if abs(p_c_ix - p_t_ix) < 5.0 and abs(ix_depth - ipo_depth) <= 100.0:
                 depth_ix = round(float(ix_depth), 1)
                 method = "Line intersection"
@@ -153,7 +160,7 @@ def design_valve_spacing_analytical(case: dict) -> tuple[list[float], list[dict]
     depth_current = dv1
 
     for valve_num in range(2, MAX_VALVES + 1):
-        p_so_n = operating_surface_pressure(p["p_so"], valve_num)
+        p_so_n = operating_surface_pressure(p["p_so"], valve_num, valve_type_from_case(case))
         g_adj = casing_gradient_for_valve_number(p["g_s"], valve_num)
         delta = (p_so_n - p["g_u"] * depth_current - p["p_wh"]) / g_adj
         if delta <= 0:
@@ -229,9 +236,9 @@ def validate_valve_spacing(case: dict, valve_depths: list[float]) -> list[dict]:
 
         from pressure_engines import casing_pressure_at_depth, tubing_pressure_at_depth
 
-        p_so_n = operating_surface_pressure(p_so, i + 1)
+        p_so_n = operating_surface_pressure(p_so, i + 1, valve_type_from_case(case))
         p_c = casing_pressure_at_depth(depth, p_ko, g_s, i + 1)
-        p_t = tubing_pressure_at_depth(depth, p_so_n, g_u)
+        p_t = operating_boundary_pressure(case, i + 1, depth)
         margin = p_c - p_t
         if margin < 50:
             results.append(

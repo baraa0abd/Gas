@@ -4,8 +4,10 @@ import numpy as np
 
 from pressure_engines import (
     casing_pressure_at_depth,
-    tubing_pressure_at_depth,
     operating_surface_pressure,
+    wfl_depth,
+    valve_type_from_case,
+    operating_boundary_pressure,
 )
 from valve_engine import design_valves, validate_valve_spacing, resolve_sfl
 from plotter import plot_pressure_depth_diagram
@@ -23,6 +25,10 @@ DEFAULT_CASE = {
     "g_u": 0.15,
     "sfl": 0.0,
     "design_limit_depth": 5550.0,
+    "unloading_destination": "surface",
+    "valve_type": "balanced",
+    "pwf": 200.0,
+    "kill_fluid_anchor_psi": 2000.0,
     "valve_depths": [],
     # Phase 1 — Fluid properties
     "oil_api_gravity": 35.0,
@@ -62,6 +68,10 @@ if "gas_lift_cases" not in st.session_state:
             "g_u": 0.125,
             "sfl": 3407.0,
             "design_limit_depth": 5550.0,
+            "unloading_destination": "surface",
+            "valve_type": "balanced",
+            "pwf": 100.0,
+            "kill_fluid_anchor_psi": 2000.0,
             "valve_depths": [3407.0, 3900.0, 4400.0, 4700.0],
             "oil_api_gravity": 40.0,
             "gas_gravity": 0.65,
@@ -209,17 +219,13 @@ def run_engine(case: dict) -> list[float]:
     depths, details = design_valves(case)
     case["valve_design_details"] = details
     case["sfl_depth"] = resolve_sfl(case)
-    case["wfl_depth"] = case["sfl_depth"]
+    case["wfl_depth"] = wfl_depth(case)
     case["validation_results"] = validate_valve_spacing(case, depths)
     return depths
 
 
 def _p_casing(depth: float, p_ko: float, g_s: float, valves_installed: int) -> float:
     return casing_pressure_at_depth(depth, p_ko, g_s, valves_installed)
-
-
-def _p_kill(depth: float, p_so: float, g_u: float, p_wh: float) -> float:
-    return tubing_pressure_at_depth(depth, p_so, g_u)
 
 
 # ---------------------------------------------------------------------------
@@ -265,9 +271,11 @@ def build_pressure_detail_rows(case_key: str, case_tuple: tuple) -> pd.DataFrame
             temp_f,
         )
         g_casing = casing_gradient_at_valve_count(g_s, max(valves_above, 1))
-        p_so_at_d = operating_surface_pressure(p_so, max(valves_above, 1))
+        p_so_at_d = operating_surface_pressure(
+            p_so, max(valves_above, 1), valve_type_from_case(case)
+        )
         p_c = _p_casing(depth, p_ko, g_s, max(valves_above, 1))
-        p_t = tubing_pressure_at_depth(depth, p_so_at_d, g_u)
+        p_t = operating_boundary_pressure(case, max(valves_above, 1), depth)
 
         rows.append(
             {
@@ -300,9 +308,9 @@ def build_valve_summary(case: dict) -> pd.DataFrame:
 
     rows = []
     for i, depth in enumerate(valves, start=1):
-        p_so_valve = operating_surface_pressure(p_so, i)
+        p_so_valve = operating_surface_pressure(p_so, i, valve_type_from_case(case))
         p_c = _p_casing(depth, p_ko, g_s, i)
-        p_t = tubing_pressure_at_depth(depth, p_so_valve, g_u)
+        p_t = operating_boundary_pressure(case, i, depth)
         margin = p_c - p_t
         valve_type, coefficient = recommend_valve_type(depth, margin)
         temp_f = calculate_temperature_at_depth(
@@ -399,6 +407,10 @@ CASE_WIDGET_FIELDS: dict[str, str] = {
     "g_u": "g_u",
     "sfl": "sfl",
     "design_limit_depth": "design_limit",
+    "unloading_destination": "unload_dest",
+    "valve_type": "valve_type",
+    "pwf": "pwf",
+    "kill_fluid_anchor_psi": "kill_anchor",
     "oil_api_gravity": "oil_api",
     "gas_gravity": "gas_grav",
     "water_cut_percent": "water_cut",
@@ -566,6 +578,34 @@ with st.sidebar:
             step=50.0,
             key=widget_key(active_case, "design_limit_depth"),
             help="Maximum depth for gas lift design. Pressure lines stop here (typical: 5550 ft).",
+        )
+        st.selectbox(
+            "Unloading Destination",
+            ["surface", "separator", "pit"],
+            key=widget_key(active_case, "unloading_destination"),
+            help="Sets Psurface for kill fluid: Pwh (surface), Psep (separator), or 0 (pit).",
+        )
+        st.radio(
+            "Valve Type",
+            ["balanced", "unbalanced"],
+            key=widget_key(active_case, "valve_type"),
+            help="Balanced: Pso−25×(n−1) tubing lines. Unbalanced: valves on strict PSO line.",
+        )
+        st.number_input(
+            "Flowing BHP Pwf (psi)",
+            min_value=0.0,
+            max_value=5000.0,
+            step=10.0,
+            key=widget_key(active_case, "pwf"),
+            help="Used for WFL = WD − Pwf/Gs (Gfb = Gs).",
+        )
+        st.number_input(
+            "Kill Fluid Anchor Pressure (psi)",
+            min_value=500.0,
+            max_value=5000.0,
+            step=50.0,
+            key=widget_key(active_case, "kill_fluid_anchor_psi"),
+            help="Second kill-fluid anchor point (typical: 2000 psi).",
         )
 
         st.divider()
